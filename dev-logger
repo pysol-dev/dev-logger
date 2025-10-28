@@ -1,0 +1,193 @@
+#!/bin/bash
+# Daily Development Activity Logger
+# Tracks all terminal activity, file changes, and generates daily summaries
+
+set -euo pipefail
+
+# Configuration
+LOG_DIR="$HOME/.dev-logs"
+DAILY_LOG_DIR="$LOG_DIR/daily"
+SUMMARY_DIR="$LOG_DIR/summaries"
+HISTORY_BACKUP_DIR="$LOG_DIR/history-backups"
+
+# Create directories
+mkdir -p "$DAILY_LOG_DIR" "$SUMMARY_DIR" "$HISTORY_BACKUP_DIR"
+
+# Get today's date
+TODAY=$(date +%Y-%m-%d)
+TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
+
+# Log files
+COMMAND_LOG="$DAILY_LOG_DIR/${TODAY}_commands.log"
+FILE_CHANGES_LOG="$DAILY_LOG_DIR/${TODAY}_file_changes.log"
+GIT_LOG="$DAILY_LOG_DIR/${TODAY}_git_activity.log"
+SUMMARY_FILE="$SUMMARY_DIR/${TODAY}_summary.md"
+
+# Function: Log a command with timestamp
+log_command() {
+    echo "[$(date '+%H:%M:%S')] $*" >> "$COMMAND_LOG"
+}
+
+# Function: Track file system changes
+track_file_changes() {
+    local watch_dirs=("$HOME/repos" "$HOME/projects" "$HOME/Documents")
+    
+    for dir in "${watch_dirs[@]}"; do
+        if [[ -d "$dir" ]]; then
+            find "$dir" -type f -mtime 0 -printf "%T@ %p\n" 2>/dev/null | \
+                sort -n | \
+                awk '{$1=""; print substr($0,2)}' >> "$FILE_CHANGES_LOG"
+        fi
+    done
+}
+
+# Function: Track git activity across all repos
+track_git_activity() {
+    local repo_dirs=("$HOME/repos" "$HOME/projects")
+    
+    echo "=== Git Activity for $TODAY ===" > "$GIT_LOG"
+    echo "" >> "$GIT_LOG"
+    
+    for base_dir in "${repo_dirs[@]}"; do
+        if [[ -d "$base_dir" ]]; then
+            find "$base_dir" -type d -name ".git" 2>/dev/null | while read -r git_dir; do
+                repo_path=$(dirname "$git_dir")
+                repo_name=$(basename "$repo_path")
+                
+                cd "$repo_path" || continue
+                
+                # Check for uncommitted changes
+                if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+                    echo "## Repository: $repo_name" >> "$GIT_LOG"
+                    echo "Path: $repo_path" >> "$GIT_LOG"
+                    echo "" >> "$GIT_LOG"
+                    
+                    echo "### Modified Files:" >> "$GIT_LOG"
+                    git status --short >> "$GIT_LOG"
+                    echo "" >> "$GIT_LOG"
+                    
+                    echo "### Diff Summary:" >> "$GIT_LOG"
+                    git diff --stat >> "$GIT_LOG"
+                    echo "" >> "$GIT_LOG"
+                fi
+                
+                # Today's commits
+                if git log --since="today 00:00" --pretty=format:"%h - %s (%ar)" 2>/dev/null | grep -q .; then
+                    echo "### Today's Commits:" >> "$GIT_LOG"
+                    git log --since="today 00:00" --pretty=format:"- %h: %s (%ar by %an)" >> "$GIT_LOG"
+                    echo "" >> "$GIT_LOG"
+                    echo "" >> "$GIT_LOG"
+                fi
+            done
+        fi
+    done
+}
+
+# Function: Backup bash history
+backup_history() {
+    if [[ -f "$HOME/.bash_history" ]]; then
+        cp "$HOME/.bash_history" "$HISTORY_BACKUP_DIR/${TIMESTAMP}_bash_history"
+        
+        # Keep only last 30 days of backups
+        find "$HISTORY_BACKUP_DIR" -type f -mtime +30 -delete
+    fi
+}
+
+# Function: Generate daily summary
+generate_summary() {
+    {
+        echo "# Development Activity Summary"
+        echo "**Date:** $TODAY"
+        echo "**Generated:** $(date '+%Y-%m-%d %H:%M:%S')"
+        echo ""
+        echo "---"
+        echo ""
+        
+        # Command statistics
+        if [[ -f "$COMMAND_LOG" ]]; then
+            local cmd_count=$(wc -l < "$COMMAND_LOG")
+            echo "## Command Activity"
+            echo "- **Total Commands:** $cmd_count"
+            echo ""
+            
+            if [[ $cmd_count -gt 0 ]]; then
+                echo "### Most Recent Commands (Last 20):"
+                echo '```bash'
+                tail -20 "$COMMAND_LOG"
+                echo '```'
+                echo ""
+            fi
+        fi
+        
+        # File changes
+        if [[ -f "$FILE_CHANGES_LOG" ]]; then
+            local file_count=$(wc -l < "$FILE_CHANGES_LOG" 2>/dev/null || echo 0)
+            if [[ $file_count -gt 0 ]]; then
+                echo "## Modified Files"
+                echo "- **Files Changed Today:** $file_count"
+                echo ""
+                echo "### Recently Modified:"
+                echo '```'
+                head -50 "$FILE_CHANGES_LOG"
+                echo '```'
+                echo ""
+            fi
+        fi
+        
+        # Git activity
+        if [[ -f "$GIT_LOG" ]]; then
+            echo "## Git Activity"
+            cat "$GIT_LOG"
+            echo ""
+        fi
+        
+        # System info
+        echo "## System Information"
+        echo "- **Hostname:** $(hostname)"
+        echo "- **Uptime:** $(uptime -p)"
+        echo "- **Disk Usage (Home):** $(df -h "$HOME" | awk 'NR==2 {print $5 " used"}')"
+        echo ""
+        
+        echo "---"
+        echo "*Log files stored in: $LOG_DIR*"
+        
+    } > "$SUMMARY_FILE"
+    
+    echo "Daily summary generated: $SUMMARY_FILE"
+}
+
+# Main execution
+case "${1:-}" in
+    track-files)
+        track_file_changes
+        ;;
+    track-git)
+        track_git_activity
+        ;;
+    backup-history)
+        backup_history
+        ;;
+    summary)
+        generate_summary
+        ;;
+    daily-end)
+        # Run end-of-day tasks
+        track_file_changes
+        track_git_activity
+        backup_history
+        generate_summary
+        ;;
+    *)
+        echo "Development Activity Logger"
+        echo ""
+        echo "Usage: $0 {track-files|track-git|backup-history|summary|daily-end}"
+        echo ""
+        echo "Commands:"
+        echo "  track-files      - Track modified files in watched directories"
+        echo "  track-git        - Track git activity across all repositories"
+        echo "  backup-history   - Backup bash history"
+        echo "  summary          - Generate daily summary report"
+        echo "  daily-end        - Run all end-of-day tracking and generate summary"
+        exit 1
+        ;;
+esac

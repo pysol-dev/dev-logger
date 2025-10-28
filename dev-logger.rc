@@ -1,0 +1,61 @@
+# Development Logger Configuration
+# Source this file in your .bashrc to enable automatic activity tracking
+
+# Ensure dev-logger is in PATH
+export PATH="$HOME/bin:$PATH"
+
+# Configuration
+export DEV_LOG_DIR="$HOME/.dev-logs"
+export DEV_COMMAND_LOG="$DEV_LOG_DIR/daily/$(date +%Y-%m-%d)_commands.log"
+
+# Create log directory
+mkdir -p "$DEV_LOG_DIR/daily"
+
+# Enhanced bash history settings for better tracking
+export HISTSIZE=10000                    # Commands in memory
+export HISTFILESIZE=50000                # Commands in file
+export HISTTIMEFORMAT="%Y-%m-%d %H:%M:%S  "  # Timestamp format
+export HISTCONTROL=ignoredups            # Ignore duplicate commands
+shopt -s histappend                      # Append to history, don't overwrite
+
+# Log every command with timestamp (runs before each command)
+log_command() {
+    local cmd=$(history 1 | sed 's/^[ ]*[0-9]*[ ]*//')
+    echo "[$(date '+%H:%M:%S')] $cmd" >> "$DEV_COMMAND_LOG"
+}
+
+# Set up command logging hook
+if [[ -n "$PROMPT_COMMAND" ]]; then
+    PROMPT_COMMAND="log_command; $PROMPT_COMMAND"
+else
+    PROMPT_COMMAND="log_command"
+fi
+
+# Aliases for quick access
+alias dev-summary='dev-logger summary'
+alias dev-end='dev-logger daily-end'
+alias dev-git='dev-logger track-git'
+alias dev-files='dev-logger track-files'
+alias dev-logs='ls -lh ~/.dev-logs/summaries/'
+alias dev-today='cat ~/.dev-logs/summaries/$(date +%Y-%m-%d)_summary.md'
+
+# Function to view recent activity
+dev-recent() {
+    local count=${1:-20}
+    echo "=== Last $count Commands ==="
+    tail -n "$count" "$DEV_COMMAND_LOG" 2>/dev/null || echo "No commands logged today yet."
+}
+
+# Function to search command history
+dev-search() {
+    if [[ -z "$1" ]]; then
+        echo "Usage: dev-search <pattern>"
+        return 1
+    fi
+    echo "=== Searching for: $1 ==="
+    grep -ri "$1" "$DEV_LOG_DIR/daily/"*_commands.log 2>/dev/null || echo "No matches found."
+}
+
+echo "✓ Development activity logging enabled"
+echo "  Commands: dev-summary, dev-end, dev-recent, dev-search"
+echo "  Logs stored in: $DEV_LOG_DIR"
