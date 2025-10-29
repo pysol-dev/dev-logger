@@ -1,0 +1,225 @@
+#!/bin/bash
+# Dev Logger - Real-time File System Monitor
+# Automatically logs meaningful changes to the system
+
+set -euo pipefail
+
+# Configuration
+LOG_DIR="$HOME/.dev-logs"
+MONITOR_LOG="$LOG_DIR/monitor.log"
+EVENT_LOG="$LOG_DIR/events/$(date +%Y-%m-%d)_events.log"
+TASK_DIR="$LOG_DIR/tasks"
+PROJECT_DIR="$LOG_DIR/projects"
+
+# Create directories
+mkdir -p "$LOG_DIR/events" "$TASK_DIR" "$PROJECT_DIR"
+
+# Files and directories to monitor for meaningful changes
+WATCH_PATTERNS=(
+    # Config files
+    "\.bashrc$"
+    "\.bash_profile$"
+    "\.profile$"
+    "\.zshrc$"
+    "\.ssh/config$"
+    "\.ssh/authorized_keys$"
+    "\.gitconfig$"
+    "\.vimrc$"
+    "\.tmux\.conf$"
+    
+    # Scripts
+    "\.sh$"
+    "\.bash$"
+    
+    # Package management
+    "package\.json$"
+    "package-lock\.json$"
+    "requirements\.txt$"
+    "Pipfile$"
+    "Gemfile$"
+    "Cargo\.toml$"
+    "go\.mod$"
+    "composer\.json$"
+    
+    # Build and config
+    "Dockerfile$"
+    "docker-compose\.yml$"
+    "\.env$"
+    "\.env\..*$"
+    "Makefile$"
+    "CMakeLists\.txt$"
+    
+    # Project files
+    "README\.md$"
+    "\.gitignore$"
+    "\.git/config$"
+)
+
+# Function: Check if file matches watch patterns
+is_monitored_file() {
+    local file="$1"
+    for pattern in "${WATCH_PATTERNS[@]}"; do
+        if echo "$file" | grep -qE "$pattern"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Function: Log event
+log_event() {
+    local event_type="$1"
+    local file="$2"
+    local details="${3:-}"
+    
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] $event_type: $file $details" >> "$EVENT_LOG"
+    echo "[$timestamp] $event_type: $file $details" >> "$MONITOR_LOG"
+}
+
+# Function: Detect package installations
+check_package_install() {
+    local file="$1"
+    
+    case "$file" in
+        *package.json)
+            log_event "PKG_CHANGE" "$file" "(npm/yarn package manifest)"
+            ;;
+        *requirements.txt)
+            log_event "PKG_CHANGE" "$file" "(pip requirements)"
+            ;;
+        *Pipfile)
+            log_event "PKG_CHANGE" "$file" "(pipenv)"
+            ;;
+        *Cargo.toml)
+            log_event "PKG_CHANGE" "$file" "(rust cargo)"
+            ;;
+        *go.mod)
+            log_event "PKG_CHANGE" "$file" "(go modules)"
+            ;;
+    esac
+}
+
+# Function: Monitor using inotifywait (if available)
+monitor_with_inotify() {
+    if ! command -v inotifywait &> /dev/null; then
+        echo "inotifywait not found. Install inotify-tools for real-time monitoring."
+        echo "Falling back to periodic monitoring..."
+        return 1
+    fi
+    
+    local watch_dirs=(
+        "$HOME/.ssh"
+        "$HOME/.config"
+        "$HOME/repos"
+        "$HOME/projects"
+    )
+    
+    echo "Starting real-time file monitor..."
+    echo "Watching: ${watch_dirs[*]}"
+    
+    inotifywait -m -r -e modify,create,delete,moved_to \
+        --format '%e %w%f' \
+        "${watch_dirs[@]}" 2>/dev/null | \
+    while read -r event file; do
+        if is_monitored_file "$file"; then
+            case "$event" in
+                MODIFY)
+                    log_event "MODIFIED" "$file"
+                    check_package_install "$file"
+                    ;;
+                CREATE)
+                    log_event "CREATED" "$file"
+                    ;;
+                DELETE)
+                    log_event "DELETED" "$file"
+                    ;;
+                MOVED_TO)
+                    log_event "MOVED" "$file"
+                    ;;
+            esac
+        fi
+    done
+}
+
+# Function: Periodic monitoring (fallback)
+monitor_periodic() {
+    local last_check_file="$LOG_DIR/.last_check"
+    local check_interval=300  # 5 minutes
+    
+    echo "Starting periodic file monitor (checking every $check_interval seconds)..."
+    
+    while true; do
+        local watch_dirs=("$HOME/.ssh" "$HOME/.config" "$HOME/repos" "$HOME/projects")
+        
+        for dir in "${watch_dirs[@]}"; do
+            if [[ -d "$dir" ]]; then
+                find "$dir" -type f -mmin -5 2>/dev/null | while read -r file; do
+                    if is_monitored_file "$file"; then
+                        if [[ ! -f "$last_check_file" ]] || [[ "$file" -nt "$last_check_file" ]]; then
+                            log_event "MODIFIED" "$file"
+                            check_package_install "$file"
+                        fi
+                    fi
+                done
+            fi
+        done
+        
+        touch "$last_check_file"
+        sleep "$check_interval"
+    done
+}
+
+# Function: Show recent events
+show_events() {
+    local count="${1:-20}"
+    echo "=== Recent System Events (Last $count) ==="
+    tail -n "$count" "$EVENT_LOG" 2>/dev/null || echo "No events logged today."
+}
+
+# Function: Install inotify-tools if needed
+install_inotify() {
+    echo "Installing inotify-tools for real-time monitoring..."
+    
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update && sudo apt-get install -y inotify-tools
+    elif command -v yum &> /dev/null; then
+        sudo yum install -y inotify-tools
+    elif command -v brew &> /dev/null; then
+        brew install inotify-tools
+    else
+        echo "Unable to install inotify-tools automatically."
+        echo "Please install it manually for your system."
+        return 1
+    fi
+}
+
+# Main execution
+case "${1:-}" in
+    start)
+        monitor_with_inotify || monitor_periodic
+        ;;
+    events)
+        show_events "${2:-20}"
+        ;;
+    install-inotify)
+        install_inotify
+        ;;
+    *)
+        echo "Dev Logger - Real-time Monitor"
+        echo ""
+        echo "Usage: $0 {start|events|install-inotify}"
+        echo ""
+        echo "Commands:"
+        echo "  start            - Start real-time file system monitoring"
+        echo "  events [count]   - Show recent events (default: 20)"
+        echo "  install-inotify  - Install inotify-tools for better monitoring"
+        echo ""
+        echo "Monitored file types:"
+        echo "  - Config files (.bashrc, .ssh/config, etc.)"
+        echo "  - Scripts (.sh, .bash)"
+        echo "  - Package manifests (package.json, requirements.txt, etc.)"
+        echo "  - Build configs (Dockerfile, Makefile, etc.)"
+        exit 1
+        ;;
+esac

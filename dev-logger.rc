@@ -39,6 +39,16 @@ alias dev-files='dev-logger track-files'
 alias dev-logs='ls -lh ~/.dev-logs/summaries/'
 alias dev-today='cat ~/.dev-logs/summaries/$(date +%Y-%m-%d)_summary.md'
 
+# Task tracking aliases
+alias dev-task-start='dev-task start'
+alias dev-task-finish='dev-task finish'
+alias dev-task-list='dev-task list'
+alias dev-task-show='dev-task current'
+alias dev-task-note='dev-task note'
+
+# Monitoring aliases
+alias dev-events='dev-monitor events'
+
 # Function to view recent activity
 dev-recent() {
     local count=${1:-20}

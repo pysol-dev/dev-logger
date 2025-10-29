@@ -1,0 +1,245 @@
+#!/bin/bash
+# Dev Logger - Task Tracking
+# Track tasks across multiple days and sessions
+
+set -euo pipefail
+
+# Configuration
+LOG_DIR="$HOME/.dev-logs"
+TASK_DIR="$LOG_DIR/tasks"
+ACTIVE_TASKS_FILE="$TASK_DIR/.active_tasks"
+COMMAND_LOG="$LOG_DIR/daily/$(date +%Y-%m-%d)_commands.log"
+
+mkdir -p "$TASK_DIR"
+touch "$ACTIVE_TASKS_FILE"
+
+# Function: Generate task ID
+generate_task_id() {
+    echo "task_$(date +%Y%m%d_%H%M%S)_$$"
+}
+
+# Function: Start a new task
+start_task() {
+    local task_name="$1"
+    local task_id=$(generate_task_id)
+    local task_file="$TASK_DIR/${task_id}.log"
+    
+    # Create task file
+    {
+        echo "# Task: $task_name"
+        echo "# ID: $task_id"
+        echo "# Started: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "# Status: ACTIVE"
+        echo ""
+        echo "---"
+        echo ""
+    } > "$task_file"
+    
+    # Add to active tasks
+    echo "$task_id|$task_name|$(date '+%Y-%m-%d %H:%M:%S')" >> "$ACTIVE_TASKS_FILE"
+    
+    # Set as current task
+    echo "$task_id" > "$TASK_DIR/.current_task"
+    
+    echo "✓ Started task: $task_name"
+    echo "  Task ID: $task_id"
+    echo "  All commands will be logged to this task until you finish or switch tasks."
+}
+
+# Function: Log to current task
+log_to_task() {
+    local message="$1"
+    local task_id=$(cat "$TASK_DIR/.current_task" 2>/dev/null || echo "")
+    
+    if [[ -z "$task_id" ]]; then
+        return
+    fi
+    
+    local task_file="$TASK_DIR/${task_id}.log"
+    if [[ -f "$task_file" ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $message" >> "$task_file"
+    fi
+}
+
+# Function: Finish a task
+finish_task() {
+    local task_id="${1:-$(cat "$TASK_DIR/.current_task" 2>/dev/null || echo "")}"
+    
+    if [[ -z "$task_id" ]]; then
+        echo "No active task to finish."
+        return 1
+    fi
+    
+    local task_file="$TASK_DIR/${task_id}.log"
+    
+    if [[ ! -f "$task_file" ]]; then
+        echo "Task file not found: $task_id"
+        return 1
+    fi
+    
+    # Update task file
+    echo "" >> "$task_file"
+    echo "---" >> "$task_file"
+    echo "# Finished: $(date '+%Y-%m-%d %H:%M:%S')" >> "$task_file"
+    sed -i 's/^# Status: ACTIVE/# Status: COMPLETED/' "$task_file"
+    
+    # Remove from active tasks
+    sed -i "/^$task_id|/d" "$ACTIVE_TASKS_FILE"
+    
+    # Clear current task
+    rm -f "$TASK_DIR/.current_task"
+    
+    local task_name=$(grep "^# Task:" "$task_file" | sed 's/^# Task: //')
+    echo "✓ Finished task: $task_name"
+    echo "  Task log: $task_file"
+}
+
+# Function: List active tasks
+list_tasks() {
+    local status="${1:-active}"
+    
+    case "$status" in
+        active)
+            if [[ ! -s "$ACTIVE_TASKS_FILE" ]]; then
+                echo "No active tasks."
+                return
+            fi
+            
+            echo "=== Active Tasks ==="
+            while IFS='|' read -r task_id task_name started; do
+                local current=""
+                if [[ -f "$TASK_DIR/.current_task" ]] && [[ "$(cat "$TASK_DIR/.current_task")" == "$task_id" ]]; then
+                    current=" (current)"
+                fi
+                echo "  [$task_id]$current"
+                echo "    Name: $task_name"
+                echo "    Started: $started"
+                echo ""
+            done < "$ACTIVE_TASKS_FILE"
+            ;;
+        all)
+            echo "=== All Tasks ==="
+            find "$TASK_DIR" -name "task_*.log" -type f | sort -r | head -20 | while read -r task_file; do
+                local task_name=$(grep "^# Task:" "$task_file" | sed 's/^# Task: //')
+                local task_id=$(basename "$task_file" .log)
+                local status=$(grep "^# Status:" "$task_file" | sed 's/^# Status: //')
+                local started=$(grep "^# Started:" "$task_file" | sed 's/^# Started: //')
+                
+                echo "  [$task_id] $status"
+                echo "    Name: $task_name"
+                echo "    Started: $started"
+                echo ""
+            done
+            ;;
+    esac
+}
+
+# Function: Show task details
+show_task() {
+    local task_id="${1:-$(cat "$TASK_DIR/.current_task" 2>/dev/null || echo "")}"
+    
+    if [[ -z "$task_id" ]]; then
+        echo "No task specified and no current task."
+        return 1
+    fi
+    
+    local task_file="$TASK_DIR/${task_id}.log"
+    
+    if [[ ! -f "$task_file" ]]; then
+        echo "Task not found: $task_id"
+        return 1
+    fi
+    
+    cat "$task_file"
+}
+
+# Function: Switch to a different task
+switch_task() {
+    local task_id="$1"
+    local task_file="$TASK_DIR/${task_id}.log"
+    
+    if [[ ! -f "$task_file" ]]; then
+        echo "Task not found: $task_id"
+        return 1
+    fi
+    
+    # Check if task is still active
+    if ! grep -q "^$task_id|" "$ACTIVE_TASKS_FILE"; then
+        echo "Task $task_id is not active (already completed)."
+        return 1
+    fi
+    
+    echo "$task_id" > "$TASK_DIR/.current_task"
+    
+    local task_name=$(grep "^# Task:" "$task_file" | sed 's/^# Task: //')
+    echo "✓ Switched to task: $task_name"
+    echo "  Task ID: $task_id"
+}
+
+# Function: Add note to current task
+add_note() {
+    local note="$*"
+    local task_id=$(cat "$TASK_DIR/.current_task" 2>/dev/null || echo "")
+    
+    if [[ -z "$task_id" ]]; then
+        echo "No active task. Start a task first with: dev-task start \"task name\""
+        return 1
+    fi
+    
+    log_to_task "NOTE: $note"
+    echo "✓ Note added to current task"
+}
+
+# Main execution
+case "${1:-}" in
+    start)
+        if [[ -z "${2:-}" ]]; then
+            echo "Usage: dev-task start \"task name\""
+            exit 1
+        fi
+        start_task "$2"
+        ;;
+    finish)
+        finish_task "${2:-}"
+        ;;
+    list)
+        list_tasks "${2:-active}"
+        ;;
+    show)
+        show_task "${2:-}"
+        ;;
+    switch)
+        if [[ -z "${2:-}" ]]; then
+            echo "Usage: dev-task switch <task_id>"
+            exit 1
+        fi
+        switch_task "$2"
+        ;;
+    note)
+        shift
+        add_note "$@"
+        ;;
+    current)
+        show_task
+        ;;
+    *)
+        echo "Dev Logger - Task Tracking"
+        echo ""
+        echo "Usage: $0 <command> [options]"
+        echo ""
+        echo "Commands:"
+        echo "  start \"name\"     - Start a new task"
+        echo "  finish [id]      - Finish current task (or specified task)"
+        echo "  list [all]       - List active tasks (or all tasks)"
+        echo "  show [id]        - Show current task details (or specified task)"
+        echo "  switch <id>      - Switch to a different active task"
+        echo "  note \"text\"      - Add a note to current task"
+        echo "  current          - Show current task"
+        echo ""
+        echo "Examples:"
+        echo "  dev-task start \"Fix login bug\""
+        echo "  dev-task note \"Found the issue in auth.js\""
+        echo "  dev-task finish"
+        exit 1
+        ;;
+esac
